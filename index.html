@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>霓虹戰場 - MOBA 進階版</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #050505; font-family: 'Segoe UI', sans-serif; touch-action: none; }
+        canvas { display: block; }
+
+        /* UI 層 */
+        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+        
+        /* 技能按鈕 (右下) */
+        .controls {
+            position: absolute; bottom: 20px; right: 20px; display: flex; gap: 15px; pointer-events: auto;
+        }
+        .btn {
+            width: 70px; height: 70px; border-radius: 50%;
+            background: rgba(0, 20, 40, 0.8); border: 2px solid #00f260;
+            color: #fff; font-size: 20px; font-weight: bold;
+            display: flex; justify-content: center; align-items: center;
+            position: relative; overflow: hidden; user-select: none;
+            box-shadow: 0 0 10px #00f260;
+        }
+        .btn:active { transform: scale(0.95); }
+        .cd-overlay {
+            position: absolute; bottom: 0; left: 0; width: 100%; height: 0%;
+            background: rgba(0,0,0,0.8); transition: height 0.1s linear;
+        }
+
+        /* 頂部 HUD */
+        #top-bar {
+            position: absolute; top: 0; left: 0; width: 100%; height: 60px;
+            background: linear-gradient(to bottom, rgba(0,0,0,0.8), transparent);
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 0 20px; box-sizing: border-box; color: white;
+        }
+        .score { font-size: 24px; font-weight: bold; text-shadow: 0 0 5px currentColor; }
+        
+        /* 玩家狀態 (左下) */
+        #player-stats {
+            position: absolute; bottom: 20px; left: 20px;
+            color: white; text-shadow: 1px 1px 2px black;
+        }
+        .bar-container { width: 200px; height: 10px; background: #333; margin-top: 5px; border-radius: 5px; overflow: hidden; }
+        .hp-bar { height: 100%; background: #ff4444; width: 100%; transition: width 0.2s; }
+        .xp-bar { height: 100%; background: #ffd700; width: 0%; transition: width 0.2s; }
+        .level-badge {
+            display: inline-block; width: 30px; height: 30px; background: #ffd700; color: black;
+            border-radius: 50%; text-align: center; line-height: 30px; font-weight: bold; margin-right: 10px;
+        }
+
+        /* 廣播文字 */
+        #announcer {
+            position: absolute; top: 20%; width: 100%; text-align: center;
+            font-size: 40px; font-weight: 900; font-style: italic;
+            text-shadow: 0 0 20px rgba(255,0,0,0.8);
+            opacity: 0; transform: scale(0.5); transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+
+        #game-over-screen {
+            position: absolute; inset: 0; background: rgba(0,0,0,0.9);
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            color: white; display: none; pointer-events: auto; z-index: 100;
+        }
+    </style>
+</head>
+<body>
+
+<canvas id="gameCanvas"></canvas>
+
+<div id="ui-layer">
+    <div id="top-bar">
+        <span class="score" style="color: #4facfe" id="score-blue">0</span>
+        <span style="font-size: 14px; opacity: 0.7;">3 vs 3</span>
+        <span class="score" style="color: #ff5e62" id="score-red">0</span>
+    </div>
+
+    <div id="announcer">DOUBLE KILL</div>
+
+    <div id="player-stats">
+        <div style="display:flex; align-items:center; margin-bottom:5px;">
+            <div class="level-badge" id="hud-level">1</div>
+            <span style="font-size:18px;">英雄等級</span>
+        </div>
+        <div class="bar-container"><div class="hp-bar" id="hud-hp"></div></div>
+        <div class="bar-container" style="height: 6px; margin-top:3px; background:#444;"><div class="xp-bar" id="hud-xp"></div></div>
+    </div>
+
+    <div class="controls">
+        <div class="btn" onmousedown="castSkill(1)" ontouchstart="castSkill(1)">Q<div class="cd-overlay" id="cd1"></div></div>
+        <div class="btn" onmousedown="castSkill(2)" ontouchstart="castSkill(2)">W<div class="cd-overlay" id="cd2"></div></div>
+        <div class="btn" style="border-color:#ff4444" onmousedown="castSkill(3)" ontouchstart="castSkill(3)">R<div class="cd-overlay" id="cd3"></div></div>
+    </div>
+
+    <div id="game-over-screen">
+        <h1 id="end-title" style="font-size: 50px; margin-bottom: 20px;">VICTORY</h1>
+        <button onclick="restartGame()" style="padding: 15px 40px; font-size: 24px; background: #00f260; border: none; border-radius: 30px; cursor: pointer;">再戰一場</button>
+    </div>
+</div>
+
+<script>
+    // --- 引擎設定 ---
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    let width, height;
+    
+    function resize() {
+        width = window.innerWidth;
+        height = window.innerHeight;
+        canvas.width = width;
+        canvas.height = height;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // --- 遊戲全域變數 ---
+    let gameActive = true;
+    let lastTime = 0;
+    let camera = { x: 0, y: 0 };
+    let entities = [];
+    let particles = [];
+    let texts = [];
+    let player = null;
+    let score = { blue: 0, red: 0 };
+    
+    // 草叢設定
+    const bushes = [
+        { x: 200, y: 600, w: 150, h: 400 }, // 左下草
+        { x: 1650, y: 1000, w: 150, h: 400 }, // 右上草
+        { x: 900, y: 900, w: 200, h: 200 }   // 中間草
+    ];
+
+    // --- 類別定義 ---
+
+    class Entity {
+        constructor(x, y, radius, team, type) {
+            this.x = x;
+            this.y = y;
+            this.radius = radius;
+            this.team = team; // 'blue', 'red'
+            this.type = type; // 'hero', 'minion', 'tower', 'base'
+            
+            // 屬性
+            this.maxHp = 100;
+            this.hp = 100;
+            this.damage = 10;
+            this.speed = 0;
+            this.range = 150;
+            
+            this.targetX = x;
+            this.targetY = y;
+            this.dead = false;
+            this.inBush = false;
+            
+            // 狀態
+            this.attackCd = 0;
+            this.regenTimer = 0;
+            
+            // 等級系統 (僅英雄有)
+            this.level = 1;
+            this.xp = 0;
+            this.maxXp = 100;
+        }
+
+        update(dt) {
+            if(this.dead) return;
+
+            // 回血機制 (脫戰 3 秒後每秒回 5%)
+            this.regenTimer += dt;
+            if(this.regenTimer > 3 && this.hp < this.maxHp) {
+                this.hp += this.maxHp * 0.05 * dt;
+                if(this.hp > this.maxHp) this.hp = this.maxHp;
+            }
+
+            // 檢查草叢
+            this.checkBush();
+            
+            // AI 與 移動
+            if (this === player) {
+                this.movePlayer(dt);
+            } else if (this.type !== 'tower' && this.type !== 'base') {
+                this.runAI(dt);
+            } else {
+                this.runTowerAI(dt);
+            }
+
+            // 攻擊冷卻
+            if(this.attackCd > 0) this.attackCd -= dt;
+        }
+
+        checkBush() {
+            this.inBush = false;
+            for(let b of bushes) {
+                if(this.x > b.x && this.x < b.x + b.w && this.y > b.y && this.y < b.y + b.h) {
+                    this.inBush = true;
+                }
+            }
+        }
+
+        movePlayer(dt) {
+            const dx = this.targetX - this.x;
+            const dy = this.targetY - this.y;
+            const dist = Math.hypot(dx, dy);
+            if(dist > 5) {
+                const angle = Math.atan2(dy, dx);
+                const moveStep = Math.min(this.speed * dt, dist);
+                this.x += Math.cos(angle) * moveStep;
+                this.y += Math.sin(angle) * moveStep;
+            }
+            
+            // 玩家自動攻擊
+            this.findAndAttackTarget();
+        }
+
+        runAI(dt) {
+            // 簡單 AI：找最近的敵人 -> 攻擊或移動
+            let target = this.findBestTarget();
+            
+            if(target) {
+                const dist = Math.hypot(target.x - this.x, target.y - this.y);
+                if(dist <= this.range) {
+                    if(this.attackCd <= 0) this.attack(target);
+                } else {
+                    const angle = Math.atan2(target.y - this.y, target.x - this.x);
+                    this.x += Math.cos(angle) * this.speed * dt;
+                    this.y += Math.sin(angle) * this.speed * dt;
+                }
+            } else {
+                // 沒敵人就往前推進
+                const goal = this.team === 'blue' ? {x: 2000, y: 2000} : {x: 0, y: 0};
+                const angle = Math.atan2(goal.y - this.y, goal.x - this.x);
+                this.x += Math.cos(angle) * this.speed * dt;
+                this.y += Math.sin(angle) * this.speed * dt;
+            }
+        }
+
+        runTowerAI(dt) {
+            let target = this.findBestTarget();
+            if(target && this.attackCd <= 0) {
+                const dist = Math.hypot(target.x - this.x, target.y - this.y);
+                if(dist <= this.range) this.attack(target);
+            }
+        }
+
+        findBestTarget() {
+            let minDist = this.type === 'tower' ? this.range : 500;
+            let target = null;
+            
+            entities.forEach(e => {
+                if(e.team !== this.team && !e.dead) {
+                    // **核心機制：如果在草叢裡，且我也在草叢外，我看不到他**
+                    if(e.inBush && !this.inBush && this.team !== e.team) return;
+
+                    const d = Math.hypot(e.x - this.x, e.y - this.y);
+                    if(d < minDist) {
+                        minDist = d;
+                        target = e;
+                    }
+                }
+            });
+            return target;
+        }
+        
+        findAndAttackTarget() {
+            if(this.attackCd > 0) return;
+            let target = this.findBestTarget();
+            if(target && Math.hypot(target.x - this.x, target.y - this.y) <= this.range) {
+              
